@@ -7,19 +7,31 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #include "../include/vshell.h"
 #include "../include/cmd_parser.h"
 
 void vshell::start_shell() {
 	std::string cmd;
+	char* readline_buff;
 	int ret;
 	int in = STDIN_FILENO;
+	int saved_in = dup(STDIN_FILENO), saved_out = dup(STDOUT_FILENO);
+
+	signal(SIGINT, handle_sigint);
 
 	while (true) {
-		std::cout << "vsh> ";
-		getline(std::cin, cmd);
+		dup2(saved_in, STDIN_FILENO);
+		dup2(saved_out, STDOUT_FILENO);
+
+		readline_buff = readline("vsh> ");
+		cmd = readline_buff;
 		if (cmd.empty()) continue;
+
+		add_history(readline_buff);
+
 		if (cmd == "exit") break;
 
 		cmd_parser parser(cmd);
@@ -39,6 +51,7 @@ void vshell::start_shell() {
 		}
 
 		// Handling multiple commands chained with operators like "|", "&&", "||"
+		std::string prev_opr = "";
 		while (!parser.cmds_queue.empty()) {
 			cmd = parser.cmds_queue.front();
 			std::string opr = "";
@@ -65,8 +78,11 @@ void vshell::start_shell() {
 
 				in = pipe_fd[0];
 
-				if (parser.opr_queue.empty())
-					dup2(in, STDIN_FILENO);
+				prev_opr = opr;
+			} else if (prev_opr == oprs["PIPE"] &&
+					   (parser.opr_queue.empty() || parser.opr_queue.front() != oprs["PIPE"])) {
+
+				execute_cmd(cmd, in, STDOUT_FILENO);
 			}
 		}
 	}
@@ -78,8 +94,9 @@ void vshell::execute_builtin_cmd(std::string cmd) {
 	return;
 }
 
-void vshell::execute_cmd(std::string cmd, int input, int output) {
+int vshell::execute_cmd(std::string cmd, int input, int output) {
 	int cmd_status = 0;
+	int ret;
 
 	int pid = fork();
 	if (pid < 0) {
@@ -106,21 +123,26 @@ void vshell::execute_cmd(std::string cmd, int input, int output) {
 		dup2(out[1], STDOUT_FILENO);
 		dup2(err[1], STDERR_FILENO);
 
-		if (input != STDIN_FILENO) {
-			dup2(input, in[1]);
-			close(input);
-		}
-
-		if (output != STDOUT_FILENO) {
-			dup2(output, out[1]);
-			close(output);
+		// pipes are present
+		if (pipe_fd[0] != -1 && pipe_fd[1] != -1) {
+			if (input != STDIN_FILENO) {
+				ret = dup2(input, STDIN_FILENO);
+				if (ret < 0) std::cerr << strerror(errno) << ": ret value" << ret << "\n";
+				close(input);
+			}
+			if (output != STDOUT_FILENO) {
+				ret = dup2(output, STDOUT_FILENO);
+				if (ret < 0) std::cerr << strerror(errno) << ": ret value" << ret << "\n";
+				close(output);
+			}
+			close(pipe_fd[0]);
 		}
 
 		if (cmd.find(INPUT_REDIRECT) != std::string::npos) {
-			std::vector<std::string> cmd_list = cmd_parser::split_cmd_into_vector(cmd, OUTPUT_REDIRECT);
+			std::vector<std::string> cmd_list = cmd_parser::split_cmd_into_vector(cmd, INPUT_REDIRECT);
 			cmd = cmd_list[0];
-			if (cmd_list[1][0] == ' ') cmd_list[1] = cmd_list[1].substr(1, cmd_list[1].size());
-			if (cmd_list[1][cmd_list[1].size()] == ' ') cmd_list[1].pop_back();
+			if (cmd_list[1].starts_with(' ')) cmd_list[1].erase(0, 1);
+			if (cmd_list[1].ends_with(' ')) cmd_list[1].pop_back();
 
 			in_fd = open(cmd_list[1].c_str(), O_RDONLY);
 			if (in_fd < 0) {
@@ -135,8 +157,8 @@ void vshell::execute_cmd(std::string cmd, int input, int output) {
 		if (cmd.find(OUTPUT_REDIRECT) != std::string::npos) {
 			std::vector<std::string> cmd_list = cmd_parser::split_cmd_into_vector(cmd, OUTPUT_REDIRECT);
 			cmd = cmd_list[0];
-			if (cmd_list[1][0] == ' ') cmd_list[1] = cmd_list[1].substr(1, cmd_list[1].size());
-			if (cmd_list[1][cmd_list[1].size()] == ' ') cmd_list[1].pop_back();
+			if (cmd_list[1].starts_with(' ')) cmd_list[1].erase(0, 1);
+			if (cmd_list[1].ends_with(' ')) cmd_list[1].pop_back();
 
 			out_fd = open(cmd_list[1].c_str(), O_CREAT | O_WRONLY, 0644);
 			if (out_fd < 0) {
@@ -149,7 +171,7 @@ void vshell::execute_cmd(std::string cmd, int input, int output) {
 		}
 
 		std::vector<std::string> cmd_list = cmd_parser::split_cmd_into_vector(cmd, ' ');
-		if (cmd_list.empty()) return;
+		if (cmd_list.empty()) return -1;
 		const char* cmd_file = cmd_list[0].c_str();
 		char *args_list[cmd_list.size() + 1];
 		std::memset(args_list, 0, sizeof(args_list));
@@ -174,6 +196,8 @@ void vshell::execute_cmd(std::string cmd, int input, int output) {
 		close(out[0]);
 		close(err[0]);
 	}
+
+	return cmd_status;
 }
 
 void vshell::create_pipes() {

@@ -23,6 +23,7 @@ void cmd_parser::parse() {
 		if (cmd_token == oprs["PIPE"] ||
 			cmd_token == oprs["AND"] ||
 			cmd_token == oprs["OR"]) {
+			if (command.starts_with(' ')) command.erase(0, 1);
 			cmds_queue.push(command);
 			opr_queue.push(cmd_token);
 			command.clear();
@@ -31,4 +32,6 @@ void cmd_parser::parse() {
 			command.append(cmd_token);
 		}
 	}
+	if (command.starts_with(' ')) command.erase(0, 1);
+	cmds_queue.push(command);
 }

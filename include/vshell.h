@@ -10,7 +10,7 @@
 class vshell {
 private:
 	int in[2], out[2], err[2];
-	int pipe_fd[2];
+	int pipe_fd[2] = {-1, -1};
 	// This can be further added
 	std::vector<std::string> builtin_cmds = {"cd", "exec", "echo", "eval", "export", "unset"};
 	std::unordered_map<std::string, void (vshell::*) (const std::string&)> builtin_cmd_funcs;
@@ -21,7 +21,7 @@ private:
 
 public:
 	void load_builtin_cmds();
-	void execute_cmd(std::string cmd, int input, int output);
+	int execute_cmd(std::string cmd, int input, int output);
 	void execute_builtin_cmd(std::string cmd);
 	void start_shell();
 	bool check_if_cmd_exists(const std::string& cmd);
@@ -32,5 +32,8 @@ public:
 	void _export(const std::string& cmd);
 	void _unset(const std::string& cmd);
 };
+
+void handle_sigint(int sig) {}
+
 
 #endif
